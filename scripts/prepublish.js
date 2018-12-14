@@ -58,4 +58,4 @@ verifyIsCleanWorkTree()
 console.log(`okay to publish`)
 
 console.log(`checking windows`)
-assert(checkWinBinary)
+assert(checkWinBinary())
