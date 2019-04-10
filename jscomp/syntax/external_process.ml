@@ -29,7 +29,7 @@
 
 let variant_can_bs_unwrap_fields (row_fields : Parsetree.row_field list) : bool =
   let validity =
-    Ext_list.fold_left row_fields `No_fields      
+    Ext_list.fold_left row_fields `No_fields
       begin fun st row ->
         match st, row with
         | (* we've seen no fields or only valid fields so far *)
@@ -60,18 +60,18 @@ let variant_can_bs_unwrap_fields (row_fields : Parsetree.row_field list) : bool 
     The result type would be [ hi:string ]
 *)
 let get_arg_type
-    ~nolabel 
+    ~nolabel
     (is_optional : bool)
     (ptyp : Ast_core_type.t) :
   External_arg_spec.attr * Ast_core_type.t  =
   let ptyp =
 #if OCAML_VERSION =~ "<4.03.0" then
-    if is_optional then    
-      match ptyp.ptyp_desc with 
+    if is_optional then
+      match ptyp.ptyp_desc with
       | Ptyp_constr (_, [ty]) -> ty  (*optional*)
       | _ -> assert false
-    else 
-#end    
+    else
+#end
       ptyp in
   if Ast_core_type.is_any ptyp then (* (_[@bs.as ])*)
     if is_optional then
@@ -101,9 +101,9 @@ let get_arg_type
     (match Ast_attributes.iter_process_bs_string_int_unwrap_uncurry ptyp.ptyp_attributes with
     | `String ->
       begin match ptyp_desc with
-        | Ptyp_variant ( row_fields, Closed, None)
-        | Ptyp_variant ( row_fields, Closed, Some [])
+        | Ptyp_variant ( row_fields, _, _)
           ->
+          (* Acculate row_fields recursively *)
           Ast_polyvar.map_row_fields_into_strings ptyp.ptyp_loc row_fields
         | _ ->
           Bs_syntaxerr.err ptyp.ptyp_loc Invalid_bs_string_type
@@ -483,10 +483,10 @@ let handle_attributes
                    end
                  | Optional name ->
                    let arg_type, new_ty_extract = get_arg_type ~nolabel:false true ty in
-                   let new_ty = 
+                   let new_ty =
 #if OCAML_VERSION =~ "<4.03.0" then
-                      Ast_core_type.lift_option_type new_ty_extract 
-#else                      
+                      Ast_core_type.lift_option_type new_ty_extract
+#else
                       new_ty_extract
 #end
                    in
@@ -538,7 +538,7 @@ let handle_attributes
             snd @@ get_arg_type ~nolabel:true false result_type (* result type can not be labeled *)
 
         in
-        begin          
+        begin
           Ast_compatible.mk_fn_type new_arg_types_ty result
           ,
           prim_name,
@@ -584,12 +584,12 @@ let handle_attributes
                      "[@@bs.string] does not work with optional when it has arities in label %s" s
                  | _ ->
                    External_arg_spec.optional s, arg_type,
-                   let new_ty = 
+                   let new_ty =
 #if OCAML_VERSION =~ "<4.03.0" then
-                      Ast_core_type.lift_option_type new_ty 
+                      Ast_core_type.lift_option_type new_ty
 #else
                       new_ty
-#end                      
+#end
                     in
                    ((label, new_ty, attr,loc) :: arg_types) end
              | Labelled s  ->
@@ -953,7 +953,7 @@ let handle_attributes
       let return_wrapper : External_ffi_types.return_wrapper =
         check_return_wrapper loc st.return_wrapper new_result_type
       in
-      Ast_compatible.mk_fn_type new_arg_types_ty new_result_type,  
+      Ast_compatible.mk_fn_type new_arg_types_ty new_result_type,
       prim_name,
       (Ffi_bs (arg_type_specs,return_wrapper ,  ffi)), left_attrs
     end
@@ -971,7 +971,7 @@ let handle_attributes_as_string
 let pval_prim_of_labels (labels : string Asttypes.loc list)
    =
   let arg_kinds =
-    Ext_list.fold_right labels [] 
+    Ext_list.fold_right labels []
       (fun {Asttypes.loc ; txt } arg_kinds
         ->
           let arg_label =
@@ -1004,7 +1004,7 @@ let pval_prim_of_option_labels
           in
           {External_arg_spec.arg_type = Nothing ;
            arg_label  } :: arg_kinds
-      )      
+      )
   in
   let encoding =
     External_ffi_types.to_string (Ffi_obj_create arg_kinds) in

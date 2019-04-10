@@ -1,23 +1,18 @@
 
-type u = [`on_closed | `on_open | `in_[@bs.as "in"]]
 
 external test_string_type : flag:([`on_closed | `on_open | `in_ [@bs.as "in"]]
-                [@bs.string]) -> string  = 
+                [@bs.string]) -> string  =
   "hey_string" [@@bs.val]
 
 
 external test_int_type :
-  ([`on_closed | `on_open [@bs.as 3] 
-   | `in_  
+  ([`on_closed | `on_open [@bs.as 3]
+   | `in_
    | `again [@bs.as 5]
-   | `hey 
+   | `hey
    ]
-     [@bs.int]) -> int  = 
+     [@bs.int]) -> int  =
   "hey_int" [@@bs.val]
-
-external test_string_extended_closed :
-  flag:([< u] [@bs.string]) -> string  =
-  "hey_string" [@@bs.val]
 
 val uu : string array
 val vv : int array
@@ -33,10 +28,10 @@ val test : readline ->
 
 
 
-val on2 : 
-  readline -> 
-  ([ `line of (string -> unit [@bs]) 
-   | `close of (unit -> unit [@bs])] 
+val on2 :
+  readline ->
+  ([ `line of (string -> unit [@bs])
+   | `close of (unit -> unit [@bs])]
      ) ->
   unit
 

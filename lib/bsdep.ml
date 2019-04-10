@@ -31977,6 +31977,215 @@ let default_mapper =
   }
 
 end
+module Ast_polyvar : sig 
+#1 "ast_polyvar.mli"
+(* Copyright (C) 2017 Authors of BuckleScript
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * In addition to the permissions granted to you by the LGPL, you may combine
+ * or link a "work that uses the Library" with a publicly distributed version
+ * of this file to produce a combined library or application, then distribute
+ * that combined work under the terms of your choosing, with no requirement
+ * to comply with the obligations normally placed on you by section 4 of the
+ * LGPL version 3 (or the corresponding section of a later version of the LGPL
+ * should you choose to use a later version).
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA. *)
+
+(** side effect: it will mark used attributes `bs.as`  *)
+val map_row_fields_into_ints:
+  Location.t ->
+  Parsetree.row_field list ->
+  (int * int ) list
+
+val map_constructor_declarations_into_ints:
+  Parsetree.constructor_declaration list ->
+  [ `Offset of int | `New  of int list ]
+
+val map_row_fields_into_strings:
+  Location.t ->
+  Parsetree.row_field list ->
+  [ `Nothing | `Null | `NonNull ] * (int * string) list
+
+
+val is_enum :
+  Parsetree.row_field list ->
+  bool
+
+val is_enum_polyvar :
+  Parsetree.type_declaration ->
+  Parsetree.row_field list option
+
+val is_enum_constructors :
+  Parsetree.constructor_declaration list ->
+  bool
+
+end = struct
+#1 "ast_polyvar.ml"
+(* Copyright (C) 2017 Authors of BuckleScript
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * In addition to the permissions granted to you by the LGPL, you may combine
+ * or link a "work that uses the Library" with a publicly distributed version
+ * of this file to produce a combined library or application, then distribute
+ * that combined work under the terms of your choosing, with no requirement
+ * to comply with the obligations normally placed on you by section 4 of the
+ * LGPL version 3 (or the corresponding section of a later version of the LGPL
+ * should you choose to use a later version).
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA. *)
+
+
+let map_row_fields_into_ints ptyp_loc
+    (row_fields : Parsetree.row_field list)
+  =
+  let _, acc =
+    Ext_list.fold_left row_fields (0, [])
+       (fun (i,acc) rtag ->
+          match rtag with
+          | Rtag (label, attrs, true,  [])
+            ->
+            begin match Ast_attributes.iter_process_bs_int_as attrs with
+              | Some i ->
+                i + 1,
+                ((Ast_compatible.hash_label label , i):: acc )
+              | None ->
+                i + 1 ,
+                ((Ast_compatible.hash_label label , i):: acc )
+            end
+          | _ ->
+            Bs_syntaxerr.err ptyp_loc Invalid_bs_int_type
+       )  in
+  List.rev acc
+
+(** Note this is okay with enums, for variants,
+    the underlying representation may change due to
+    unbox
+*)
+let map_constructor_declarations_into_ints
+    (row_fields : Parsetree.constructor_declaration list)
+  =
+  let mark = ref `nothing in
+  let _, acc
+    =
+    Ext_list.fold_left row_fields (0, [])
+       (fun (i,acc) rtag ->
+          let attrs = rtag.pcd_attributes in
+           match Ast_attributes.iter_process_bs_int_as attrs with
+            | Some j ->
+              if j <> i then
+                (
+                  if i = 0 then mark := `offset j
+                  else mark := `complex
+                )
+              ;
+              (j + 1,
+               (j:: acc ) )
+            | None ->
+              i + 1 ,
+              ( i:: acc )
+       ) in
+  match !mark with
+  | `nothing -> `Offset 0
+  | `offset j -> `Offset j
+  | `complex -> `New (List.rev acc)
+
+
+
+(** It also check in-consistency of cases like
+    {[ [`a  | `c of int ] ]}
+*)
+let rec map_row_fields_into_strings ptyp_loc
+    (row_fields : Parsetree.row_field list) =
+    Ext_list.fold_right row_fields (`Nothing, []) (fun tag (nullary, acc) ->
+        match nullary, tag with
+        | (`Nothing | `Null),
+          Rtag (label, attrs, true,  [])
+          ->
+          begin match Ast_attributes.iter_process_bs_string_as attrs with
+            | Some name ->
+              `Null, ((Ast_compatible.hash_label label, name) :: acc )
+
+            | None ->
+              `Null, ((Ast_compatible.hash_label label, Ast_compatible.label_of_name label) :: acc )
+          end
+        | (`Nothing | `NonNull), Rtag(label, attrs, false, ([ _ ]))
+          ->
+          begin match Ast_attributes.iter_process_bs_string_as attrs with
+            | Some name ->
+              `NonNull, ((Ast_compatible.hash_label label, name) :: acc)
+            | None ->
+              `NonNull, ((Ast_compatible.hash_label label, Ast_compatible.label_of_name label) :: acc)
+          end
+        | (`Nothing | `Null | `NonNull), Rinherit(ptyp)
+          ->
+            begin match ptyp.ptyp_desc with
+              | Ptyp_variant ( row_fields, _, _)
+              (* | Ptyp_variant ( row_fields, Closed, Some []) *)
+                ->
+                map_row_fields_into_strings ptyp.ptyp_loc row_fields
+              | Ptyp_constr(_) ->
+                Bs_syntaxerr.err ptyp.ptyp_loc Invalid_bs_int_type
+              | _ ->
+                Bs_syntaxerr.err ptyp.ptyp_loc Invalid_bs_string_type
+            end
+        | _ -> Bs_syntaxerr.err ptyp_loc Invalid_bs_string_type
+
+      )
+
+
+let is_enum row_fields =
+  List.for_all (fun (x : Parsetree.row_field) ->
+      match x with
+      | Rtag(_label,_attrs,true, []) -> true
+      | _ -> false
+    ) row_fields
+
+
+let is_enum_polyvar (ty : Parsetree.type_declaration) =
+  match ty.ptype_manifest with
+  | Some {ptyp_desc = Ptyp_variant(row_fields,Closed,None)}
+    when is_enum row_fields ->
+    Some row_fields
+  | _ -> None
+
+let is_enum_constructors
+    (constructors : Parsetree.constructor_declaration list) =
+  List.for_all
+    (fun (x : Parsetree.constructor_declaration) ->
+       match x with
+       | {pcd_args =
+
+        []
+
+        } -> true
+       | _ -> false
+    )
+    constructors
+
+end
 module Ext_json_types
 = struct
 #1 "ext_json_types.ml"
@@ -33047,206 +33256,6 @@ let optional s = Optional s
 let empty_kind arg_type = { arg_label = empty_label ; arg_type }
 
 end
-module Ast_polyvar : sig 
-#1 "ast_polyvar.mli"
-(* Copyright (C) 2017 Authors of BuckleScript
- * 
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Lesser General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * In addition to the permissions granted to you by the LGPL, you may combine
- * or link a "work that uses the Library" with a publicly distributed version
- * of this file to produce a combined library or application, then distribute
- * that combined work under the terms of your choosing, with no requirement
- * to comply with the obligations normally placed on you by section 4 of the
- * LGPL version 3 (or the corresponding section of a later version of the LGPL
- * should you choose to use a later version).
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Lesser General Public License for more details.
- * 
- * You should have received a copy of the GNU Lesser General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA. *)
-
-(** side effect: it will mark used attributes `bs.as`  *)
-val map_row_fields_into_ints:
-  Location.t -> 
-  Parsetree.row_field list -> 
-  (int * int ) list 
-
-val map_constructor_declarations_into_ints:
-  Parsetree.constructor_declaration list ->
-  [ `Offset of int | `New  of int list ]
-
-val map_row_fields_into_strings:
-  Location.t -> 
-  Parsetree.row_field list -> 
-  External_arg_spec.attr
-
-
-val is_enum :   
-  Parsetree.row_field list -> 
-  bool
-
-val is_enum_polyvar :   
-  Parsetree.type_declaration ->
-  Parsetree.row_field list option 
-
-val is_enum_constructors :   
-  Parsetree.constructor_declaration list ->
-  bool 
-end = struct
-#1 "ast_polyvar.ml"
-(* Copyright (C) 2017 Authors of BuckleScript
- * 
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Lesser General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * In addition to the permissions granted to you by the LGPL, you may combine
- * or link a "work that uses the Library" with a publicly distributed version
- * of this file to produce a combined library or application, then distribute
- * that combined work under the terms of your choosing, with no requirement
- * to comply with the obligations normally placed on you by section 4 of the
- * LGPL version 3 (or the corresponding section of a later version of the LGPL
- * should you choose to use a later version).
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Lesser General Public License for more details.
- * 
- * You should have received a copy of the GNU Lesser General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA. *)
-
-
-let map_row_fields_into_ints ptyp_loc
-    (row_fields : Parsetree.row_field list) 
-  = 
-  let _, acc = 
-    Ext_list.fold_left row_fields (0, []) 
-       (fun (i,acc) rtag -> 
-          match rtag with 
-          | Rtag (label, attrs, true,  [])
-            -> 
-            begin match Ast_attributes.iter_process_bs_int_as attrs with 
-              | Some i -> 
-                i + 1, 
-                ((Ast_compatible.hash_label label , i):: acc ) 
-              | None -> 
-                i + 1 , 
-                ((Ast_compatible.hash_label label , i):: acc )
-            end
-          | _ -> 
-            Bs_syntaxerr.err ptyp_loc Invalid_bs_int_type
-       )  in 
-  List.rev acc
-
-(** Note this is okay with enums, for variants,
-    the underlying representation may change due to       
-    unbox
-*)
-let map_constructor_declarations_into_ints 
-    (row_fields : Parsetree.constructor_declaration list)
-  = 
-  let mark = ref `nothing in 
-  let _, acc
-    = 
-    Ext_list.fold_left row_fields (0, []) 
-       (fun (i,acc) rtag -> 
-          let attrs = rtag.pcd_attributes in 
-           match Ast_attributes.iter_process_bs_int_as attrs with 
-            | Some j -> 
-              if j <> i then 
-                (
-                  if i = 0 then mark := `offset j
-                  else mark := `complex
-                )
-              ;
-              (j + 1, 
-               (j:: acc ) )
-            | None -> 
-              i + 1 , 
-              ( i:: acc )
-       ) in 
-  match !mark with 
-  | `nothing -> `Offset 0
-  | `offset j -> `Offset j 
-  | `complex -> `New (List.rev acc)
-
-
-
-(** It also check in-consistency of cases like 
-    {[ [`a  | `c of int ] ]}       
-*)  
-let map_row_fields_into_strings ptyp_loc 
-    (row_fields : Parsetree.row_field list) : External_arg_spec.attr = 
-  let case, result = 
-    Ext_list.fold_right row_fields (`Nothing, []) (fun tag (nullary, acc) -> 
-        match nullary, tag with 
-        | (`Nothing | `Null), 
-          Rtag (label, attrs, true,  [])
-          -> 
-          begin match Ast_attributes.iter_process_bs_string_as attrs with 
-            | Some name -> 
-              `Null, ((Ast_compatible.hash_label label, name) :: acc )
-
-            | None -> 
-              `Null, ((Ast_compatible.hash_label label, Ast_compatible.label_of_name label) :: acc )
-          end
-        | (`Nothing | `NonNull), Rtag(label, attrs, false, ([ _ ])) 
-          -> 
-          begin match Ast_attributes.iter_process_bs_string_as attrs with 
-            | Some name -> 
-              `NonNull, ((Ast_compatible.hash_label label, name) :: acc)
-            | None -> 
-              `NonNull, ((Ast_compatible.hash_label label, Ast_compatible.label_of_name label) :: acc)
-          end
-        | _ -> Bs_syntaxerr.err ptyp_loc Invalid_bs_string_type
-
-      )  in 
-  match case with 
-  | `Nothing -> Bs_syntaxerr.err ptyp_loc Invalid_bs_string_type
-  | `Null -> External_arg_spec.NullString result 
-  | `NonNull -> NonNullString result
-
-
-let is_enum row_fields = 
-  List.for_all (fun (x : Parsetree.row_field) -> 
-      match x with 
-      | Rtag(_label,_attrs,true, []) -> true 
-      | _ -> false
-    ) row_fields
-
-
-let is_enum_polyvar (ty : Parsetree.type_declaration) =      
-  match ty.ptype_manifest with 
-  | Some {ptyp_desc = Ptyp_variant(row_fields,Closed,None)}
-    when is_enum row_fields ->
-    Some row_fields 
-  | _ -> None 
-
-let is_enum_constructors 
-    (constructors : Parsetree.constructor_declaration list) =   
-  List.for_all 
-    (fun (x : Parsetree.constructor_declaration) ->
-       match x with 
-       | {pcd_args = 
-  
-        []
-        
-        } -> true 
-       | _ -> false 
-    )
-    constructors
-end
 module External_ffi_types : sig 
 #1 "external_ffi_types.mli"
 (* Copyright (C) 2015-2016 Bloomberg Finance L.P.
@@ -34084,7 +34093,7 @@ end = struct
 
 let variant_can_bs_unwrap_fields (row_fields : Parsetree.row_field list) : bool =
   let validity =
-    Ext_list.fold_left row_fields `No_fields      
+    Ext_list.fold_left row_fields `No_fields
       begin fun st row ->
         match st, row with
         | (* we've seen no fields or only valid fields so far *)
@@ -34115,18 +34124,18 @@ let variant_can_bs_unwrap_fields (row_fields : Parsetree.row_field list) : bool 
     The result type would be [ hi:string ]
 *)
 let get_arg_type
-    ~nolabel 
+    ~nolabel
     (is_optional : bool)
     (ptyp : Ast_core_type.t) :
   External_arg_spec.attr * Ast_core_type.t  =
   let ptyp =
 
-    if is_optional then    
-      match ptyp.ptyp_desc with 
+    if is_optional then
+      match ptyp.ptyp_desc with
       | Ptyp_constr (_, [ty]) -> ty  (*optional*)
       | _ -> assert false
-    else 
-    
+    else
+
       ptyp in
   if Ast_core_type.is_any ptyp then (* (_[@bs.as ])*)
     if is_optional then
@@ -34157,8 +34166,14 @@ let get_arg_type
     | `String ->
       begin match ptyp_desc with
         | Ptyp_variant ( row_fields, Closed, None)
+        | Ptyp_variant ( row_fields, Closed, Some [])
           ->
-          Ast_polyvar.map_row_fields_into_strings ptyp.ptyp_loc row_fields
+          let case, result = Ast_polyvar.map_row_fields_into_strings ptyp.ptyp_loc row_fields in
+          begin match case with
+            | `Nothing -> Bs_syntaxerr.err ptyp.ptyp_loc Invalid_bs_string_type
+            | `Null -> External_arg_spec.NullString result
+            | `NonNull -> NonNullString result
+          end
         | _ ->
           Bs_syntaxerr.err ptyp.ptyp_loc Invalid_bs_string_type
       end
@@ -34537,9 +34552,9 @@ let handle_attributes
                    end
                  | Optional name ->
                    let arg_type, new_ty_extract = get_arg_type ~nolabel:false true ty in
-                   let new_ty = 
+                   let new_ty =
 
-                      Ast_core_type.lift_option_type new_ty_extract 
+                      Ast_core_type.lift_option_type new_ty_extract
 
                    in
                    begin match arg_type with
@@ -34590,7 +34605,7 @@ let handle_attributes
             snd @@ get_arg_type ~nolabel:true false result_type (* result type can not be labeled *)
 
         in
-        begin          
+        begin
           Ast_compatible.mk_fn_type new_arg_types_ty result
           ,
           prim_name,
@@ -34636,10 +34651,10 @@ let handle_attributes
                      "[@@bs.string] does not work with optional when it has arities in label %s" s
                  | _ ->
                    External_arg_spec.optional s, arg_type,
-                   let new_ty = 
+                   let new_ty =
 
-                      Ast_core_type.lift_option_type new_ty 
-                      
+                      Ast_core_type.lift_option_type new_ty
+
                     in
                    ((label, new_ty, attr,loc) :: arg_types) end
              | Labelled s  ->
@@ -35003,7 +35018,7 @@ let handle_attributes
       let return_wrapper : External_ffi_types.return_wrapper =
         check_return_wrapper loc st.return_wrapper new_result_type
       in
-      Ast_compatible.mk_fn_type new_arg_types_ty new_result_type,  
+      Ast_compatible.mk_fn_type new_arg_types_ty new_result_type,
       prim_name,
       (Ffi_bs (arg_type_specs,return_wrapper ,  ffi)), left_attrs
     end
@@ -35021,7 +35036,7 @@ let handle_attributes_as_string
 let pval_prim_of_labels (labels : string Asttypes.loc list)
    =
   let arg_kinds =
-    Ext_list.fold_right labels [] 
+    Ext_list.fold_right labels []
       (fun {Asttypes.loc ; txt } arg_kinds
         ->
           let arg_label =
@@ -35054,7 +35069,7 @@ let pval_prim_of_option_labels
           in
           {External_arg_spec.arg_type = Nothing ;
            arg_label  } :: arg_kinds
-      )      
+      )
   in
   let encoding =
     External_ffi_types.to_string (Ffi_obj_create arg_kinds) in
